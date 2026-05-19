@@ -8,7 +8,7 @@ and viewing the map for the VT + NV pilot.
 - **Node.js 22+** and **pnpm 10+** (frontend)
 - **Conda** with the `claude` environment activated (Python pipeline)
 - **Mapbox account** for a public token (free tier OK)
-- **Supabase access** to the PRISM project (`ugaidpwifzbjzjtunyok`)
+- **Supabase access** to the PRISM project (`uuqxqqcelabpacljeqgm`)
 
 ## 1 — Local env setup
 
@@ -19,9 +19,25 @@ cp .env.example .env.local
 
 Edit `.env.local` and fill in:
 
-- `SUPABASE_SERVICE_ROLE_KEY` — from Supabase dashboard → Project Settings → API → service_role secret
-- `SUPABASE_DB_URL` — replace `[password]` with the DB password from the same page
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY` — from dashboard → Project Settings → API → anon public (or `sb_publishable_…`)
+- `SUPABASE_SERVICE_ROLE_KEY` — from dashboard → Project Settings → API → service_role secret
+- `SUPABASE_DB_URL` — replace `[password]` with the DB password from Project Settings → Database
 - `NEXT_PUBLIC_MAPBOX_TOKEN` — from https://account.mapbox.com/access-tokens/
+
+## 1a — Apply migrations + seed (one-time)
+
+```powershell
+# Option A: Supabase CLI
+supabase link --project-ref uuqxqqcelabpacljeqgm
+supabase db push
+
+# Then load the layer catalog seed
+psql "$env:SUPABASE_DB_URL" -f supabase/seed/prism_layers.sql
+
+# Option B: paste each file under supabase/migrations/*.sql into the Studio
+# SQL editor at https://supabase.com/dashboard/project/uuqxqqcelabpacljeqgm/sql,
+# then paste supabase/seed/prism_layers.sql.
+```
 
 ## 2 — Install dependencies
 
