@@ -1,0 +1,74 @@
+@import "tailwindcss";
+@import "mapbox-gl/dist/mapbox-gl.css";
+
+@theme {
+  --color-background: oklch(0.145 0 0);
+  --color-foreground: oklch(0.985 0 0);
+
+  --color-card: oklch(0.205 0 0);
+  --color-card-foreground: oklch(0.985 0 0);
+
+  --color-popover: oklch(0.205 0 0);
+  --color-popover-foreground: oklch(0.985 0 0);
+
+  --color-primary: oklch(0.78 0.18 75);
+  --color-primary-foreground: oklch(0.145 0 0);
+
+  --color-secondary: oklch(0.269 0 0);
+  --color-secondary-foreground: oklch(0.985 0 0);
+
+  --color-muted: oklch(0.269 0 0);
+  --color-muted-foreground: oklch(0.708 0 0);
+
+  --color-accent: oklch(0.269 0 0);
+  --color-accent-foreground: oklch(0.985 0 0);
+
+  --color-destructive: oklch(0.629 0.245 27.325);
+  --color-destructive-foreground: oklch(0.985 0 0);
+
+  --color-border: oklch(1 0 0 / 0.1);
+  --color-input: oklch(1 0 0 / 0.15);
+  --color-ring: oklch(0.78 0.18 75);
+
+  --radius: 0.625rem;
+
+  /* PRISM friction tiers (magma-family, dark-first) */
+  --friction-0: oklch(0.18 0.04 285);   /* deep purple — no/low signal */
+  --friction-25: oklch(0.32 0.12 320);  /* magenta-purple */
+  --friction-50: oklch(0.50 0.18 30);   /* burnt orange-red */
+  --friction-75: oklch(0.68 0.18 55);   /* warm orange */
+  --friction-100: oklch(0.88 0.16 95);  /* bright yellow */
+}
+
+html,
+body,
+#__next {
+  height: 100%;
+}
+
+body {
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Mapbox attribution tweaks for dark UI */
+.mapboxgl-ctrl-attrib,
+.mapboxgl-ctrl-attrib a {
+  color: var(--color-muted-foreground) !important;
+  background: transparent !important;
+}
+
+.mapboxgl-popup-content {
+  background: var(--color-popover) !important;
+  color: var(--color-popover-foreground) !important;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.mapboxgl-popup-tip {
+  border-top-color: var(--color-popover) !important;
+  border-bottom-color: var(--color-popover) !important;
+}
