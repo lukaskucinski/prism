@@ -20,7 +20,6 @@ Retries with exponential backoff up to 3 attempts.
 from __future__ import annotations
 
 import json
-import os
 import time
 from dataclasses import dataclass
 from typing import Iterable
@@ -28,7 +27,6 @@ from typing import Iterable
 import geopandas as gpd
 from shapely.geometry import shape
 from shapely.geometry.base import BaseGeometry
-from shapely.ops import unary_union
 from tenacity import (
     RetryError,
     retry,
@@ -40,6 +38,11 @@ from tenacity import (
 from prism.db import pg_conn, supabase_admin
 from prism.index.h3_indexer import cell_polygon_wkt, features_to_r8_cells
 from prism.ingest.arcgis_query import query_arcgis_layer
+from prism.ingest.geometry_converters import (
+    count_geometry_vertices,
+    shapely_to_esri_polygon,
+    simplify_for_query,
+)
 from prism.log import db_log, get_logger
 
 logger = get_logger(__name__)
@@ -78,27 +81,33 @@ def fetch_layers(only_layer_ids: list[str] | None = None) -> list[LayerRecord]:
 
 
 def fetch_state_aoi(state_abbrs: Iterable[str]) -> BaseGeometry:
-    """Union of prism_states geometries for the given abbreviations."""
+    """Union of prism_states geometries for the given abbreviations.
+
+    Kept for backwards compat — prefer fetch_state_aois (per-state dict) so
+    each state can be ingested separately. Combining disjoint states into a
+    single AOI forces ArcGIS envelope-mode queries, which return tons of
+    features from outside both states.
+    """
+    return _fetch_union_via_psycopg(list(state_abbrs))
+
+
+def fetch_state_aois(state_abbrs: Iterable[str]) -> dict[str, BaseGeometry]:
+    """Per-state AOI geometries keyed by state_abbr."""
     abbrs = list(state_abbrs)
-    sb = supabase_admin()
-    rows = (
-        sb.table("prism_states")
-        .select("state_abbr, geom")
-        .in_("state_abbr", abbrs)
-        .execute()
-        .data
-        or []
-    )
+    with pg_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT state_abbr, ST_AsGeoJSON(geom) FROM prism_states WHERE state_abbr = ANY(%s)",
+            (abbrs,),
+        )
+        rows = cur.fetchall()
     if not rows:
         raise RuntimeError(
             f"No prism_states rows for {abbrs}. Did you run `python -m prism.boundaries.load_tiger`?"
         )
-    # The supabase-py client returns geom as GeoJSON when the column is geometry+srid
-    # set as text via PostGIS. To be safe, re-fetch via psycopg as GeoJSON.
-    return _fetch_aoi_via_psycopg(abbrs)
+    return {abbr: shape(json.loads(geojson)) for abbr, geojson in rows}
 
 
-def _fetch_aoi_via_psycopg(state_abbrs: list[str]) -> BaseGeometry:
+def _fetch_union_via_psycopg(state_abbrs: list[str]) -> BaseGeometry:
     with pg_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT ST_AsGeoJSON(ST_Union(geom)) FROM prism_states WHERE state_abbr = ANY(%s)",
@@ -116,14 +125,24 @@ def _fetch_aoi_via_psycopg(state_abbrs: list[str]) -> BaseGeometry:
     retry=retry_if_exception_type(Exception),
     reraise=True,
 )
-def _query_with_retry(layer: LayerRecord, aoi_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+def _query_with_retry(
+    layer: LayerRecord,
+    aoi_gdf: gpd.GeoDataFrame,
+    clip_boundary: BaseGeometry,
+    esri_polygon_json: str | None = None,
+    polygon_query_metadata: dict | None = None,
+) -> gpd.GeoDataFrame:
     gdf, meta = query_arcgis_layer(
         layer_url=layer.source_url,
         layer_id=layer.source_layer_id,
         polygon_geom=aoi_gdf,
         layer_name=layer.layer_name,
         geometry_type=layer.geometry_type,
-        clip_boundary=aoi_gdf.union_all(),
+        clip_boundary=clip_boundary,
+        esri_polygon_json=esri_polygon_json,
+        polygon_query_metadata=polygon_query_metadata,
+        pagination_max_iterations=50,   # 50 × 2000 = 100k features per layer-state
+        pagination_total_timeout=600.0,  # 10 min per layer-state
     )
     if meta.get("error"):
         raise RuntimeError(f"ArcGIS query failed: {meta['error']}")
@@ -132,13 +151,45 @@ def _query_with_retry(layer: LayerRecord, aoi_gdf: gpd.GeoDataFrame) -> gpd.GeoD
     return gdf
 
 
+def _build_polygon_query_payload(aoi: BaseGeometry) -> tuple[str | None, dict]:
+    """
+    Pre-build the ESRI polygon JSON string + metadata for server-side polygon-mode
+    queries. Returns (json_str, metadata). Simplifies if the AOI has too many
+    vertices for a single POST body.
+    """
+    raw_vertices = count_geometry_vertices(aoi)
+    target = aoi
+    simplification_applied = False
+    if raw_vertices > 1000:
+        target = simplify_for_query(aoi, max_vertices=1000)
+        simplification_applied = True
+    final_vertices = count_geometry_vertices(target)
+    esri = shapely_to_esri_polygon(target)
+    if esri is None:
+        return None, {"query_vertices": 0}
+    return json.dumps(esri), {
+        "query_vertices": final_vertices,
+        "raw_vertices": raw_vertices,
+        "simplification_applied": simplification_applied,
+    }
+
+
 def ingest_layer(layer: LayerRecord, aoi: BaseGeometry) -> IngestResult:
     start = time.monotonic()
     logger.info("→ %s (%s)", layer.layer_name, layer.geometry_type)
 
     try:
         aoi_gdf = gpd.GeoDataFrame(geometry=[aoi], crs="EPSG:4326")
-        gdf = _query_with_retry(layer, aoi_gdf)
+        esri_json, poly_meta = _build_polygon_query_payload(aoi)
+        # `aoi` is the single (possibly multi) geometry; pass directly as
+        # clip_boundary so we don't need GeoPandas 1.0's union_all().
+        gdf = _query_with_retry(
+            layer,
+            aoi_gdf,
+            aoi,
+            esri_polygon_json=esri_json,
+            polygon_query_metadata=poly_meta,
+        )
     except RetryError as e:
         return _record_failure(layer, f"retries exhausted: {e}", start)
     except Exception as e:  # noqa: BLE001

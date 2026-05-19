@@ -51,28 +51,36 @@ STATE_FIPS_BY_ABBR: dict[str, str] = {
 }
 
 
-def _tiger_url(kind: str) -> str:
+def _tiger_url(kind: str, state_fips: str | None = None) -> str:
+    """
+    TIGER 2024 URL pattern.
+
+    state/county ship as combined US-wide zips. CD ships only as per-state
+    zips for the 119th Congress (`tl_2024_{fips}_cd119.zip`).
+    """
     base = f"https://www2.census.gov/geo/tiger/TIGER{TIGER_YEAR}"
     if kind == "state":
         return f"{base}/STATE/tl_{TIGER_YEAR}_us_state.zip"
     if kind == "county":
         return f"{base}/COUNTY/tl_{TIGER_YEAR}_us_county.zip"
     if kind == "cd":
-        return f"{base}/CD/tl_{TIGER_YEAR}_us_cd{CONGRESS}.zip"
+        if not state_fips:
+            raise ValueError("CD requires state_fips (per-state zips only)")
+        return f"{base}/CD/tl_{TIGER_YEAR}_{state_fips}_cd{CONGRESS}.zip"
     raise ValueError(f"Unknown TIGER kind: {kind}")
 
 
-def _download_and_extract(kind: str) -> Path:
+def _download_and_extract(kind: str, state_fips: str | None = None) -> Path:
     """Download a TIGER zip to the cache dir, extract, return path to .shp."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    target_dir = CACHE_DIR / kind
+    suffix = f"_{state_fips}" if state_fips else ""
+    target_dir = CACHE_DIR / f"{kind}{suffix}"
     target_dir.mkdir(exist_ok=True)
-    # Reuse cached extract if present
     shp = next(target_dir.glob("*.shp"), None)
     if shp:
         logger.info("Using cached %s shapefile: %s", kind, shp)
         return shp
-    url = _tiger_url(kind)
+    url = _tiger_url(kind, state_fips=state_fips)
     logger.info("Downloading %s from %s", kind, url)
     r = requests.get(url, timeout=300)
     r.raise_for_status()
@@ -158,8 +166,18 @@ def load_counties(fips_set: set[str]) -> int:
 
 
 def load_districts(fips_set: set[str]) -> int:
-    shp = _download_and_extract("cd")
-    gdf = gpd.read_file(shp).to_crs("EPSG:4326")
+    """CD ships per-state in TIGER 2024 — download each requested state."""
+    frames: list[gpd.GeoDataFrame] = []
+    for fips in sorted(fips_set):
+        try:
+            shp = _download_and_extract("cd", state_fips=fips)
+            frames.append(gpd.read_file(shp).to_crs("EPSG:4326"))
+        except requests.exceptions.HTTPError as e:
+            logger.warning("CD download failed for FIPS %s: %s", fips, e)
+
+    if not frames:
+        return 0
+    gdf = gpd.GeoDataFrame(__import__("pandas").concat(frames, ignore_index=True), crs="EPSG:4326")
     state_col = "STATEFP" if "STATEFP" in gdf.columns else "STATEFP20"
     cd_col = next((c for c in ("CD119FP", "CDFP", "CDSESSN") if c in gdf.columns), None)
     if cd_col is None:
@@ -221,8 +239,13 @@ def cli(states: str, download_only: bool) -> None:
     logger.info("TIGER load: states=%s fips=%s", abbrs, sorted(fips_set))
 
     if download_only:
-        for kind in ("state", "county", "cd"):
+        for kind in ("state", "county"):
             _download_and_extract(kind)
+        for fips in sorted(fips_set):
+            try:
+                _download_and_extract("cd", state_fips=fips)
+            except requests.exceptions.HTTPError as e:
+                logger.warning("CD download skipped for FIPS %s: %s", fips, e)
         return
 
     s = load_states(fips_set)

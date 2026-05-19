@@ -3,7 +3,9 @@ CLI: `python -m prism.ingest --states VT,NV`
 
 Runs the layer ingest pipeline across all layers in prism_layers (or a subset
 selected via --layers / --categories / --only-failed). Each layer is processed
-independently; per-layer failures don't abort the run.
+once **per state** (per-state AOI keeps ArcGIS polygon-mode queries efficient
+and avoids the huge-bbox-envelope false-positive problem). Per-layer failures
+don't abort the run.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from prism.db import supabase_admin
 from prism.ingest.layer_ingest import (
     IngestResult,
     fetch_layers,
-    fetch_state_aoi,
+    fetch_state_aois,
     ingest_layer,
 )
 from prism.log import get_logger
@@ -56,8 +58,9 @@ def cli(
     abbrs = [s.strip().upper() for s in states.split(",") if s.strip()]
     logger.info("Ingest scope: states=%s", abbrs)
 
-    aoi = fetch_state_aoi(abbrs)
-    logger.info("AOI bounds: %s", aoi.bounds)
+    state_aois = fetch_state_aois(abbrs)
+    for abbr, geom in state_aois.items():
+        logger.info("  %s AOI bounds: %s", abbr, geom.bounds)
 
     # Layer selection
     only_layer_ids: list[str] | None = None
@@ -82,13 +85,35 @@ def cli(
         logger.warning("No layers selected; nothing to do.")
         return
 
-    logger.info("Ingesting %d layers", len(all_layers))
+    total_units = len(all_layers) * len(state_aois)
+    logger.info("Ingesting %d layers × %d states = %d units", len(all_layers), len(state_aois), total_units)
+
     started = time.monotonic()
     results: list[IngestResult] = []
-    for i, layer in enumerate(all_layers, start=1):
-        logger.info("[%d/%d] %s", i, len(all_layers), layer.layer_name)
-        res = ingest_layer(layer, aoi)
-        results.append(res)
+    unit = 0
+    for layer in all_layers:
+        # Aggregate per-state results into a single rollup status for this layer.
+        layer_features = 0
+        layer_hexes = 0
+        layer_statuses: list[str] = []
+        layer_errors: list[str] = []
+        for abbr, aoi in state_aois.items():
+            unit += 1
+            logger.info("[%d/%d] %s  (%s)", unit, total_units, layer.layer_name, abbr)
+            res = ingest_layer(layer, aoi)
+            results.append(res)
+            layer_features += res.features_processed
+            layer_hexes += res.hexes_written
+            layer_statuses.append(res.status)
+            if res.error:
+                layer_errors.append(f"{abbr}: {res.error}")
+
+        logger.info(
+            "  → layer rollup: features=%d hexes=%d states=%s",
+            layer_features,
+            layer_hexes,
+            ",".join(f"{a}:{s[:3]}" for a, s in zip(state_aois, layer_statuses)),
+        )
 
     elapsed = time.monotonic() - started
     succeeded = sum(1 for r in results if r.status == "success")
@@ -99,7 +124,7 @@ def cli(
 
     logger.info("─" * 60)
     logger.info(
-        "Ingest complete in %.1fs: %d ok, %d skipped, %d failed",
+        "Ingest complete in %.1fs: %d ok, %d skipped, %d failed (across all layer×state units)",
         elapsed,
         succeeded,
         skipped,

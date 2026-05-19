@@ -553,7 +553,11 @@ def query_arcgis_layer(
                     features.append(geojson_feat)
 
             # Convert to GeoDataFrame
-            gdf = gpd.GeoDataFrame.from_features(features, crs='EPSG:4326')
+            # GeoPandas 1.x rejects from_features([], crs=...). Build empty GDF explicitly.
+            if not features:
+                gdf = gpd.GeoDataFrame(geometry=[], crs='EPSG:4326')
+            else:
+                gdf = gpd.GeoDataFrame.from_features(features, crs='EPSG:4326')
             initial_count = len(gdf)
 
             # Client-side filtering: precise polygon intersection
