@@ -6,7 +6,7 @@ PRISM ships as a standalone Next.js + Mapbox GL app at `prism.kucimaps.com`, and
 
 ## Status
 
-🚧 **Pilot phase** — Vermont + Nevada only. National expansion follows pilot validation.
+🚧 **Pilot phase — Vermont only (Supabase).** Nevada and other states are supported via the pipeline's `--local-output` mode (writes to a GeoPackage on disk instead of Supabase), which keeps the free-tier project under quota. National expansion follows pilot validation + Supabase plan upgrade.
 
 ## Stack
 
@@ -45,10 +45,11 @@ pnpm dev
 # Python pipeline (conda 'claude' env)
 conda activate claude
 pip install -e modal/
-python -m prism.boundaries.load_tiger
-python -m prism.ingest --states VT,NV
-python -m prism.index --states VT,NV
-python -m prism.score
+python -m prism.boundaries.load_tiger              # downloads VT (+ any state in PRISM_PILOT_STATES)
+python -m prism.ingest --states VT                  # ingest into Supabase
+python -m prism.score --aggregate                   # score + build R7/R6 aggregates
+# Local-only NV (or any state) analysis — writes to disk, doesn't touch Supabase:
+python -m prism.ingest --states NV --local-output data/nv-hexes.gpkg
 ```
 
 ## Reference

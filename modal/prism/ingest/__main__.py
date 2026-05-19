@@ -23,6 +23,7 @@ from prism.ingest.layer_ingest import (
     fetch_state_aois,
     ingest_layer,
 )
+from prism.ingest.local_sink import LocalSink
 from prism.log import get_logger
 
 logger = get_logger(__name__)
@@ -47,6 +48,17 @@ logger = get_logger(__name__)
 @click.option("--only-failed", is_flag=True, help="Re-ingest only layers with ingest_status='failed'.")
 @click.option("--only-pending", is_flag=True, help="Re-ingest only layers with ingest_status='pending'.")
 @click.option("--limit", type=int, default=0, help="Cap the number of layers to attempt (debug).")
+@click.option(
+    "--local-output",
+    "local_output",
+    type=click.Path(dir_okay=False, path_type=str),
+    default=None,
+    help=(
+        "Write hex + join results to a local GeoPackage instead of Supabase. "
+        "Use for analytical-scope states (e.g. NV) that would overflow the "
+        "free-tier DB quota."
+    ),
+)
 def cli(
     states: str,
     layers: str | None,
@@ -54,6 +66,7 @@ def cli(
     only_failed: bool,
     only_pending: bool,
     limit: int,
+    local_output: str | None,
 ) -> None:
     abbrs = [s.strip().upper() for s in states.split(",") if s.strip()]
     logger.info("Ingest scope: states=%s", abbrs)
@@ -86,13 +99,20 @@ def cli(
         return
 
     total_units = len(all_layers) * len(state_aois)
-    logger.info("Ingesting %d layers × %d states = %d units", len(all_layers), len(state_aois), total_units)
+    sink_label = f" → local {local_output}" if local_output else " → Supabase"
+    logger.info(
+        "Ingesting %d layers × %d states = %d units%s",
+        len(all_layers),
+        len(state_aois),
+        total_units,
+        sink_label,
+    )
 
+    local_sink = LocalSink(local_output) if local_output else None
     started = time.monotonic()
     results: list[IngestResult] = []
     unit = 0
     for layer in all_layers:
-        # Aggregate per-state results into a single rollup status for this layer.
         layer_features = 0
         layer_hexes = 0
         layer_statuses: list[str] = []
@@ -100,7 +120,7 @@ def cli(
         for abbr, aoi in state_aois.items():
             unit += 1
             logger.info("[%d/%d] %s  (%s)", unit, total_units, layer.layer_name, abbr)
-            res = ingest_layer(layer, aoi)
+            res = ingest_layer(layer, aoi, local_sink=local_sink)
             results.append(res)
             layer_features += res.features_processed
             layer_hexes += res.hexes_written
@@ -114,6 +134,9 @@ def cli(
             layer_hexes,
             ",".join(f"{a}:{s[:3]}" for a, s in zip(state_aois, layer_statuses)),
         )
+
+    if local_sink is not None:
+        local_sink.close()
 
     elapsed = time.monotonic() - started
     succeeded = sum(1 for r in results if r.status == "success")
@@ -132,7 +155,10 @@ def cli(
     )
     logger.info("Total features processed: %d", total_features)
     logger.info("Total hex writes: %d", total_hexes)
-    logger.info("Next: `python -m prism.score --aggregate`")
+    if local_sink is not None:
+        logger.info("Local output: %s", local_sink.path)
+    else:
+        logger.info("Next: `python -m prism.score --aggregate`")
 
 
 if __name__ == "__main__":

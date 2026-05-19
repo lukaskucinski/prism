@@ -43,6 +43,7 @@ from prism.ingest.geometry_converters import (
     shapely_to_esri_polygon,
     simplify_for_query,
 )
+from prism.ingest.local_sink import LocalSink
 from prism.log import db_log, get_logger
 
 logger = get_logger(__name__)
@@ -174,9 +175,22 @@ def _build_polygon_query_payload(aoi: BaseGeometry) -> tuple[str | None, dict]:
     }
 
 
-def ingest_layer(layer: LayerRecord, aoi: BaseGeometry) -> IngestResult:
+def ingest_layer(
+    layer: LayerRecord,
+    aoi: BaseGeometry,
+    local_sink: "LocalSink | None" = None,
+) -> IngestResult:
+    """
+    Query the layer's ArcGIS service, H3-index the features at R8, and write
+    results either to Supabase (default) or to a local GeoPackage if a
+    `local_sink` is provided.
+
+    Either way, prism_layers.ingest_status / prism_ingest_log are updated in
+    Supabase so we keep a single auditable record of what was attempted.
+    """
     start = time.monotonic()
-    logger.info("→ %s (%s)", layer.layer_name, layer.geometry_type)
+    sink_label = f" → local:{local_sink.path.name}" if local_sink else ""
+    logger.info("→ %s (%s)%s", layer.layer_name, layer.geometry_type, sink_label)
 
     try:
         aoi_gdf = gpd.GeoDataFrame(geometry=[aoi], crs="EPSG:4326")
@@ -214,8 +228,16 @@ def ingest_layer(layer: LayerRecord, aoi: BaseGeometry) -> IngestResult:
     if not cell_counts:
         return _record_skip(layer, "no R8 cells emitted", start)
 
-    # Write to DB
-    hexes_written = _write_hexes(layer.layer_id, cell_counts)
+    # Write to DB (or to the local GeoPackage if a sink was provided)
+    if local_sink is not None:
+        hexes_written = local_sink.add_layer_hits(
+            layer_id=layer.layer_id,
+            layer_name=layer.layer_name,
+            friction_category=layer.friction_category,
+            cell_counts=cell_counts,
+        )
+    else:
+        hexes_written = _write_hexes(layer.layer_id, cell_counts)
 
     duration_ms = int((time.monotonic() - start) * 1000)
     _update_layer_status(

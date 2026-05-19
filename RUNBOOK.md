@@ -55,24 +55,37 @@ pip install -e modal
 Run these once, in this order. Each takes a few seconds to minutes.
 
 ```powershell
-# (a) Load TIGER 2024 boundaries for VT + NV
+# (a) Load TIGER 2024 boundaries (defaults to PRISM_PILOT_STATES=VT)
 python -m prism.boundaries.load_tiger
 
-# (b) Seed prism_layers from APPEIT catalog (205 entries)
+# (b) Seed prism_layers from APPEIT catalog (~131 entries after dedup)
 python -m prism.seed.load_layers
 
-# (c) Ingest layers (state-clipped to VT + NV). Long-running; tolerates per-layer failures.
-#     Start small — try one category first to validate the pipeline:
-python -m prism.ingest --categories floodplain_wetland --limit 3
-#     Then run the full ingest:
-python -m prism.ingest --states VT,NV
+# (c) Ingest the full layer catalog into Supabase, clipped to VT
+python -m prism.ingest --states VT
 
-# (d) Score + aggregate to R7/R6
+# (d) Score + aggregate R8 → R7 → R6
 python -m prism.score --aggregate
 ```
 
 Inspect progress and per-layer results in the `prism_ingest_log` table or in
 `prism_layers.ingest_status`.
+
+### Analytical ingests (other states) — local GeoPackage only
+
+Running the full catalog over a large state (e.g. Nevada) generates enough
+hex polygons + indexes to overflow the Supabase free-tier 500 MB quota. Use
+`--local-output` to write to a GeoPackage on disk instead:
+
+```powershell
+python -m prism.boundaries.load_tiger --states VT,NV   # cache NV boundaries
+python -m prism.ingest --states NV --local-output data/nv-hexes.gpkg
+```
+
+The GPKG contains two layers (`prism_hexes_r8`, `prism_hex_layer`) with the
+same column shape as the Supabase tables — read back with GeoPandas /
+DuckDB-spatial / QGIS. Layer-level metadata (`prism_layers.ingest_status`,
+`prism_ingest_log`) is still updated in Supabase so you keep one audit trail.
 
 ## 4 — Run the dev server
 
@@ -88,10 +101,12 @@ hex polygons appear over VT and NV at zoom 6+.
 | Goal | Command |
 |---|---|
 | Re-attempt only failed layers | `python -m prism.ingest --only-failed` |
-| Re-ingest one layer | `python -m prism.ingest --layers NPS_Land_Permitting_Layer-0` |
+| Re-ingest one layer | `python -m prism.ingest --layers nps_land__NPS_Land_Permitting_Layer-0` |
 | Refresh scores after weight changes | `python -m prism.score --aggregate` |
 | Refresh aggregates only | `python -m prism.index` |
-| Bust CDN tile cache | Bump `NEXT_PUBLIC_TILE_VERSION` in `.env.local` and Vercel project settings |
+| Local-only NV ingest | `python -m prism.ingest --states NV --local-output data/nv-hexes.gpkg` |
+| Wipe Supabase hex tables + start over | `python scripts/cleanup-for-vt-only.py` |
+| Bust CDN tile cache | Bump `NEXT_PUBLIC_TILE_VERSION` in `.env` and redeploy |
 
 ## 6 — Schema
 

@@ -32,44 +32,99 @@ from prism.log import db_log, get_logger
 logger = get_logger(__name__)
 
 
-def rescore_r8() -> int:
+def rescore_r8(chunk_size: int = 50_000) -> int:
     """
-    Single SQL pass: aggregate the join table by hex and update the denormalized
-    columns on prism_hex_r8. Fast even at 1M+ rows because everything is keyed.
+    Chunked rescore: builds per-hex aggregates into an unlogged scratch table
+    in batches of `chunk_size` distinct h3 indexes per chunk, then does a
+    single UPDATE join at the end.
+
+    Why chunked: a single GROUP BY over the full prism_hex_layer (~1M rows
+    × N layer joins) holds an open connection too long for Supabase's
+    pooler. Each chunk completes in a few seconds, keeping the transaction
+    short and the connection responsive.
     """
-    sql = """
-    WITH per_hex AS (
-      SELECT
-        hl.h3_index,
-        LEAST(100.0, SUM(COALESCE(l.friction_weight, 0)))::real AS friction_score,
-        COUNT(DISTINCT hl.layer_id)::int AS layer_count,
-        (
-          SELECT l2.layer_name
-          FROM prism_hex_layer hl2
-          JOIN prism_layers l2 ON l2.layer_id = hl2.layer_id
-          WHERE hl2.h3_index = hl.h3_index
-          ORDER BY COALESCE(l2.friction_weight, 0) DESC
-          LIMIT 1
-        ) AS top_friction_driver,
-        jsonb_object_agg(l.friction_category, true) AS category_flags
-      FROM prism_hex_layer hl
-      JOIN prism_layers l ON l.layer_id = hl.layer_id
-      GROUP BY hl.h3_index
-    )
-    UPDATE prism_hex_r8 r
-       SET friction_score = ph.friction_score,
-           layer_count = ph.layer_count,
-           top_friction_driver = ph.top_friction_driver,
-           category_flags = ph.category_flags,
-           updated_at = now()
-      FROM per_hex ph
-     WHERE r.h3_index = ph.h3_index
-    RETURNING r.h3_index;
-    """
+    logger.info("Computing per-hex aggregates (chunk=%d)", chunk_size)
     with pg_conn() as conn, conn.cursor() as cur:
-        cur.execute(sql)
+        cur.execute("SET statement_timeout = '600s'")
+
+        cur.execute("DROP TABLE IF EXISTS prism_hex_score_tmp")
+        cur.execute(
+            """
+            CREATE UNLOGGED TABLE prism_hex_score_tmp (
+              h3_index            TEXT PRIMARY KEY,
+              friction_score      REAL,
+              layer_count         INT,
+              top_friction_driver TEXT,
+              category_flags      JSONB
+            )
+            """
+        )
+        conn.commit()
+
+        # Iterate hexes in chunks. Use ROW_NUMBER for stable batching.
+        cur.execute("SELECT count(DISTINCT h3_index) FROM prism_hex_layer")
+        total = cur.fetchone()[0]
+        logger.info("  %d distinct hexes to score", total)
+
+        processed = 0
+        offset = 0
+        while True:
+            cur.execute(
+                """
+                WITH batch AS (
+                  SELECT DISTINCT h3_index
+                    FROM prism_hex_layer
+                   ORDER BY h3_index
+                   OFFSET %s LIMIT %s
+                )
+                INSERT INTO prism_hex_score_tmp
+                  (h3_index, friction_score, layer_count, top_friction_driver, category_flags)
+                SELECT
+                  hl.h3_index,
+                  LEAST(100.0, SUM(COALESCE(l.friction_weight, 0)))::real,
+                  COUNT(DISTINCT hl.layer_id)::int,
+                  (array_agg(l.layer_name ORDER BY COALESCE(l.friction_weight, 0) DESC))[1],
+                  jsonb_object_agg(l.friction_category, true)
+                FROM prism_hex_layer hl
+                JOIN prism_layers l ON l.layer_id = hl.layer_id
+                WHERE hl.h3_index IN (SELECT h3_index FROM batch)
+                GROUP BY hl.h3_index
+                """,
+                (offset, chunk_size),
+            )
+            inserted = cur.rowcount
+            conn.commit()
+            processed += inserted
+            logger.info(
+                "  chunk offset=%d inserted=%d total=%d/%d",
+                offset,
+                inserted,
+                processed,
+                total,
+            )
+            if inserted < chunk_size:
+                break
+            offset += chunk_size
+
+        logger.info("Updating prism_hex_r8 from scratch table...")
+        cur.execute(
+            """
+            UPDATE prism_hex_r8 r
+               SET friction_score      = s.friction_score,
+                   layer_count         = s.layer_count,
+                   top_friction_driver = s.top_friction_driver,
+                   category_flags      = s.category_flags,
+                   updated_at          = now()
+              FROM prism_hex_score_tmp s
+             WHERE r.h3_index = s.h3_index
+            """
+        )
         affected = cur.rowcount
         conn.commit()
+
+        cur.execute("DROP TABLE prism_hex_score_tmp")
+        conn.commit()
+
     logger.info("Rescored %d R8 hexes", affected)
     return affected
 

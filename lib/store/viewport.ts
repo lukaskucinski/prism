@@ -14,11 +14,11 @@ export interface ViewportStore extends Viewport {
   setBasemap: (b: ViewportStore["basemap"]) => void;
 }
 
-// VT + NV pilot — center between them
+// VT pilot — center on Vermont
 const INITIAL: Viewport = {
-  longitude: -100,
-  latitude: 40,
-  zoom: 4,
+  longitude: -72.7,
+  latitude: 44.1,
+  zoom: 7.5,
   bearing: 0,
   pitch: 0,
 };

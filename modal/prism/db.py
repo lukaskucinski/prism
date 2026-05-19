@@ -53,5 +53,22 @@ def pg_conn() -> psycopg.Connection:
     """
     Direct psycopg connection. Use for fast bulk operations (COPY, executemany).
     Caller is responsible for closing.
+
+    - TCP keepalive: long-running queries (scorer, aggregator) don't get
+      silently killed by Supabase's connection pooler / load balancer.
+    - Forces SESSION-level read-write: this Supabase project has
+      default_transaction_read_only=on at the server level (per-project
+      setting). Override every session so writes work.
     """
-    return psycopg.connect(required("SUPABASE_DB_URL"), autocommit=False)
+    conn = psycopg.connect(
+        required("SUPABASE_DB_URL"),
+        autocommit=False,
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=5,
+    )
+    with conn.cursor() as cur:
+        cur.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE")
+    conn.commit()
+    return conn
