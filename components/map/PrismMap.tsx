@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import mapboxgl, { type Map, type MapMouseEvent, type Popup } from "mapbox-gl";
 import { useFilterStore } from "@/lib/store/filters";
 import { useViewportStore } from "@/lib/store/viewport";
@@ -49,6 +49,18 @@ export default function PrismMap() {
 
   useUrlSync();
 
+  // Stable references so HexLayer's effect doesn't re-fire on every PrismMap render.
+  const tileUrl = useMemo(() => tileUrlTemplate(filters), [filters]);
+  const hexPaint = useMemo(
+    () =>
+      ({
+        "fill-color": mapboxFrictionExpression() as unknown as mapboxgl.ExpressionSpecification,
+        "fill-opacity": 0.7,
+        "fill-outline-color": "rgba(0,0,0,0.15)",
+      } as const),
+    []
+  );
+
   // Initialize map once
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -75,8 +87,56 @@ export default function PrismMap() {
     map.addControl(new mapboxgl.GeolocateControl({ trackUserLocation: false }), "bottom-right");
     map.addControl(new mapboxgl.ScaleControl({ maxWidth: 120, unit: "imperial" }), "bottom-left");
 
-    map.on("load", () => setStyleReady(true));
-    map.on("style.load", () => setStyleReady(true));
+    map.on("load", () => {
+      console.log("[PrismMap] map.load fired");
+      setStyleReady(true);
+    });
+    map.on("style.load", () => {
+      console.log("[PrismMap] map.style.load fired");
+      setStyleReady(true);
+    });
+    map.on("error", (e) => {
+      // Surface every Mapbox error to console — they normally get swallowed.
+      const err = e?.error ?? e;
+      console.error("[PrismMap] Mapbox error:", err);
+      if ((err as { status?: number })?.status) {
+        console.error("  status:", (err as { status?: number }).status);
+      }
+      if ((err as { url?: string })?.url) {
+        console.error("  url:", (err as { url?: string }).url);
+      }
+    });
+    map.on("sourcedataloading", (e) => {
+      if (e.sourceId === "prism-hex") {
+        console.log("[PrismMap] loading prism-hex tile:", e);
+      }
+    });
+    const rect = containerRef.current.getBoundingClientRect();
+    const mainEl = containerRef.current.parentElement;
+    const mainRect = mainEl?.getBoundingClientRect();
+    const bodyRect = document.body.getBoundingClientRect();
+    console.log("[PrismMap] init", {
+      token: MAPBOX_TOKEN ? `pk.…${MAPBOX_TOKEN.slice(-6)}` : "MISSING",
+      basemap: viewport.basemap,
+      style: BASEMAPS[viewport.basemap].styleUrl,
+      containerSize: `${rect.width}×${rect.height}`,
+      mainSize: mainRect ? `${mainRect.width}×${mainRect.height}` : "no main",
+      bodySize: `${bodyRect.width}×${bodyRect.height}`,
+      windowSize: `${window.innerWidth}×${window.innerHeight}`,
+      mainComputed:
+        mainEl ? getComputedStyle(mainEl).cssText.slice(0, 200) : "",
+      mapboxGlVersion: mapboxgl.version,
+    });
+
+    // Watch container size — if it becomes non-zero later, call resize().
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const r = entry.contentRect;
+        console.log("[PrismMap] container resized:", `${r.width}×${r.height}`);
+        if (r.height > 0) mapRef.current?.resize();
+      }
+    });
+    ro.observe(containerRef.current);
 
     map.on("moveend", () => {
       const c = map.getCenter();
@@ -110,8 +170,14 @@ export default function PrismMap() {
     const map = mapRef.current;
     if (!map || !styleReady) return;
 
+    const queryHex = (point: MapMouseEvent["point"]) => {
+      // Guard: layer is briefly missing while HexLayer remounts on style change.
+      if (!map.getLayer("prism-hex-fill")) return [];
+      return map.queryRenderedFeatures(point, { layers: ["prism-hex-fill"] });
+    };
+
     const onMove = (e: MapMouseEvent) => {
-      const features = map.queryRenderedFeatures(e.point, { layers: ["prism-hex-fill"] });
+      const features = queryHex(e.point);
       if (!features.length) {
         setHovered(null);
         map.getCanvas().style.cursor = "";
@@ -136,7 +202,7 @@ export default function PrismMap() {
     };
 
     const onClick = (e: MapMouseEvent) => {
-      const features = map.queryRenderedFeatures(e.point, { layers: ["prism-hex-fill"] });
+      const features = queryHex(e.point);
       if (!features.length) return;
       const f = features[0];
       const props = f.properties ?? {};
@@ -181,17 +247,13 @@ export default function PrismMap() {
 
   return (
     <>
-      <div ref={containerRef} className="absolute inset-0" />
+      <div
+        ref={containerRef}
+        className="absolute inset-0 h-full w-full"
+        style={{ height: "100%", width: "100%" }}
+      />
       {styleReady && mapRef.current && (
-        <HexLayer
-          map={mapRef.current}
-          tileUrl={tileUrlTemplate(filters)}
-          paint={{
-            "fill-color": mapboxFrictionExpression() as unknown as mapboxgl.ExpressionSpecification,
-            "fill-opacity": 0.7,
-            "fill-outline-color": "rgba(0,0,0,0.15)",
-          }}
-        />
+        <HexLayer map={mapRef.current} tileUrl={tileUrl} paint={hexPaint} />
       )}
 
       <header className="pointer-events-none absolute left-0 right-0 top-0 z-10 flex items-center justify-between p-4">
