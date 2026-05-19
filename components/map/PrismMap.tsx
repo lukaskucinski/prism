@@ -11,6 +11,8 @@ import { mapboxFrictionExpression } from "@/lib/h3/colors";
 import { HexLayer } from "./HexLayer";
 import { BasemapSwitcher } from "./BasemapSwitcher";
 import { Legend } from "@/components/panels/Legend";
+import { FilterPanel } from "@/components/panels/FilterPanel";
+import { LayerPanel } from "@/components/panels/LayerPanel";
 import { HexTooltip } from "./HexTooltip";
 import { HexPopup } from "./HexPopup";
 
@@ -199,7 +201,9 @@ export default function PrismMap() {
             Permitting Risk Index
           </span>
         </div>
-        <div className="pointer-events-auto">
+        <div className="pointer-events-auto flex items-center gap-2">
+          <FilterPanel />
+          <LayerPanel />
           <BasemapSwitcher />
         </div>
       </header>
