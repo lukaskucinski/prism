@@ -32,34 +32,34 @@ logger = get_logger(__name__)
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "config" / "layers_config.json"
 
 
-def _service_name(url: str) -> str:
+def _service_parts(url: str) -> tuple[str, str]:
     """
-    Extract the stable service-name slug from an ArcGIS REST URL.
+    Walk URL path backward to find FeatureServer/MapServer suffix. Returns
+    (service_name, service_type). Handles nested paths.
 
     Examples:
-      https://services3.arcgis.com/.../services/NPS_Land_Permitting_Layer/FeatureServer
-        → "NPS_Land_Permitting_Layer"
+      services/NPS_Land_Permitting_Layer/FeatureServer
+        → ("NPS_Land_Permitting_Layer", "FeatureServer")
+      services/TIGERweb/AIANNHA/MapServer
+        → ("AIANNHA", "MapServer")
     """
     parsed = urlparse(url)
     parts = [p for p in parsed.path.split("/") if p]
-    # Find the segment before "FeatureServer" or "MapServer"
     for i, seg in enumerate(parts):
         if seg in ("FeatureServer", "MapServer"):
-            if i > 0:
-                return parts[i - 1]
-    # Fallback: last non-empty segment
-    return parts[-1] if parts else "unknown"
+            return (parts[i - 1] if i > 0 else "unknown", seg)
+    return (parts[-1] if parts else "unknown", "FeatureServer")
 
 
-def _service_type(url: str) -> str:
-    if "/MapServer" in url:
-        return "MapServer"
-    return "FeatureServer"
+def _make_layer_id(name: str, service_name: str, sublayer_id: int) -> str:
+    """
+    Stable, human-readable PK. Mirrors scripts/build-seed-sql.mjs.
 
-
-def _make_layer_id(service_name: str, sublayer_id: int) -> str:
-    slug = re.sub(r"[^A-Za-z0-9_]+", "_", service_name).strip("_")
-    return f"{slug}-{sublayer_id}"
+    Format: {name_slug}__{service_slug}-{sublayer_id}
+    """
+    name_slug = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_").lower()[:60]
+    service_slug = re.sub(r"[^A-Za-z0-9_]+", "_", service_name).strip("_")
+    return f"{name_slug}__{service_slug}-{sublayer_id}"
 
 
 def main() -> int:
@@ -92,9 +92,8 @@ def main() -> int:
             skipped.append((name, f"unsupported geometry_type: {geometry_type}"))
             continue
 
-        service_name = _service_name(url)
-        service_type = _service_type(url)
-        layer_id = _make_layer_id(service_name, sublayer_id)
+        service_name, service_type = _service_parts(url)
+        layer_id = _make_layer_id(name, service_name, sublayer_id)
         category = category_for(raw_group)
         tier = CATEGORY_DEFAULT_TIER[category]
 
