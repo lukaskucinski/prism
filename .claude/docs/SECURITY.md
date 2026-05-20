@@ -11,7 +11,7 @@ Threat model is light for v1 (public read-only map, no user data, no payments). 
 
 ## Secrets
 
-Stored in `.env` only. `.env` is in `.gitignore`; tracked file is `.env.example` (no secrets).
+Stored in `.env` only — gitignored, never committed. No template is tracked in the repo; the required env-var list is documented in [LOCAL_DEV.md](./LOCAL_DEV.md#environment-variables).
 
 | Secret | Scope | Rotation |
 |---|---|---|

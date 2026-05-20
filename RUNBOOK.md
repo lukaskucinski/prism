@@ -12,17 +12,24 @@ and viewing the map for the VT + NV pilot.
 
 ## 1 — Local env setup
 
-```powershell
-# In repo root
-cp .env.example .env.local
+Create `.env` in the repo root. Required variables (full table with purpose +
+required flag in [.claude/docs/LOCAL_DEV.md](./.claude/docs/LOCAL_DEV.md#environment-variables)):
+
+```
+NEXT_PUBLIC_SUPABASE_URL=https://uuqxqqcelabpacljeqgm.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=...    # dashboard → Project Settings → API → anon public
+SUPABASE_SERVICE_ROLE_KEY=...        # dashboard → Project Settings → API → service_role secret
+SUPABASE_DB_URL=postgresql://postgres:[URL-ENCODED-password]@db.uuqxqqcelabpacljeqgm.supabase.co:5432/postgres
+NEXT_PUBLIC_MAPBOX_TOKEN=pk....      # https://account.mapbox.com/access-tokens/
+NEXT_PUBLIC_TILE_VERSION=1
+PRISM_PILOT_STATES=VT
 ```
 
-Edit `.env.local` and fill in:
+After editing, validate the DB URL (won't echo the password):
 
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY` — from dashboard → Project Settings → API → anon public (or `sb_publishable_…`)
-- `SUPABASE_SERVICE_ROLE_KEY` — from dashboard → Project Settings → API → service_role secret
-- `SUPABASE_DB_URL` — replace `[password]` with the DB password from Project Settings → Database
-- `NEXT_PUBLIC_MAPBOX_TOKEN` — from https://account.mapbox.com/access-tokens/
+```powershell
+node scripts/check-db-url.mjs
+```
 
 ## 1a — Apply migrations + seed (one-time)
 

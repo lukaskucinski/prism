@@ -39,7 +39,7 @@ cd prism
 
 # Frontend
 pnpm install
-cp .env.example .env.local   # add Supabase URL, anon key, Mapbox token
+# Create .env in repo root (see .claude/docs/LOCAL_DEV.md for the variable list)
 pnpm dev
 
 # Python pipeline (conda 'claude' env)

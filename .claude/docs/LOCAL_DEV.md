@@ -20,9 +20,9 @@ pnpm install
 # 2. Install the Python package into the claude conda env (editable)
 & "C:\Users\lukas\anaconda3\Scripts\conda.exe" run -n claude pip install -e .\modal
 
-# 3. Copy env template; fill in service-role key, DB password, Mapbox token
-cp .env.example .env
-# Edit .env — see SUPABASE.md for password URL-encoding caveats
+# 3. Create .env in repo root with the variables listed below (template
+#    not committed; copy from a previous machine or 1Password).
+#    See SUPABASE.md for password URL-encoding caveats.
 
 # 4. Validate the .env DB URL (does not echo password)
 node scripts/check-db-url.mjs
@@ -89,7 +89,7 @@ The GeoPackage is gitignored by default. Read it back with any standard tool: Ge
 
 ## Environment variables
 
-Lives in `.env` (gitignored). Template: `.env.example`.
+Lives in `.env` (gitignored — never committed). No template is tracked in the repo; the table below is the source of truth.
 
 | Var | Purpose | Required? |
 |---|---|---|
